@@ -1,6 +1,6 @@
 # CreateSimplifiedOFX
 
-`createSimplifiedOFX.ps` generates a simplified OFX 1.02 (SGML) file containing annual `CREDIT` transactions for import into personal-finance tools.
+`CreateSimplifiedOFX.ps1` generates a simplified OFX 1.02 (SGML) file containing annual `CREDIT` transactions for import into personal-finance tools.
 
 ## Inputs
 
@@ -30,3 +30,11 @@ Where:
 - Transaction type is always `CREDIT`.
 - Output charset is Windows-1252 (`CHARSET:1252`).
 - Amount formatting is invariant culture so OFX amounts consistently use `.`.
+
+
+## Script files
+
+- `CreateSimplifiedOFX.ps1` is the primary implementation.
+- `createSimplifiedOFX.ps` is a compatibility wrapper that forwards arguments to `CreateSimplifiedOFX.ps1` so both entry points behave the same way.
+- Default output path is `C:\output\import.ofx`.
+- Writes to the Windows system directory are blocked by both CLI and UI validation.
