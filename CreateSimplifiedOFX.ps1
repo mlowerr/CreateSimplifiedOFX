@@ -6,7 +6,7 @@ param(
 
     [Parameter()]
     [Alias('OutFile')]
-    [string]$OutputPath = 'C:\\output\\import.ofx',
+    [string]$OutputPath = 'C:\output\import.ofx',
 
     [switch]$Force
 )
@@ -126,8 +126,12 @@ try {
         throw 'Output directory was not resolved from -OutputPath.'
     }
 
-    $windowsDirectory = [System.IO.Path]::GetFullPath($env:WINDIR)
-    if ($fullOutputPath.StartsWith($windowsDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $windowsDirectory = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:WINDIR)) {
+        $windowsDirectory = [System.IO.Path]::GetFullPath($env:WINDIR)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($windowsDirectory) -and $fullOutputPath.StartsWith($windowsDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
         throw "Writing to the Windows directory is not allowed. Choose an output path outside: $windowsDirectory"
     }
 

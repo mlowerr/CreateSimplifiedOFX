@@ -181,8 +181,13 @@ $runButton.Add_Click({
 
     try {
         $fullOutputPath = [System.IO.Path]::GetFullPath($textOutput.Text)
-        $windowsDirectory = [System.IO.Path]::GetFullPath($env:WINDIR)
-        if ($fullOutputPath.StartsWith($windowsDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+
+        $windowsDirectory = $null
+        if (-not [string]::IsNullOrWhiteSpace($env:WINDIR)) {
+            $windowsDirectory = [System.IO.Path]::GetFullPath($env:WINDIR)
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($windowsDirectory) -and $fullOutputPath.StartsWith($windowsDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
             [System.Windows.Forms.MessageBox]::Show("Output cannot be inside the Windows directory: $windowsDirectory", 'Validation', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
             return
         }

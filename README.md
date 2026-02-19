@@ -16,7 +16,7 @@ Where:
 ## Example
 
 ```powershell
-./createSimplifiedOFX.ps \
+./CreateSimplifiedOFX.ps1 \
   -Entry "08/15/26,21.38,29" \
   -Entry "02/15/27,15.00,5" \
   -OutputPath "./annual_deposits.ofx"
@@ -28,7 +28,7 @@ Where:
   - `<ACCTID>0`
   - `<ACCTTYPE>IMPORT`
 - Transaction type is always `CREDIT`.
-- Output charset is Windows-1252 (`CHARSET:1252`).
+- Output charset is UTF-8 with BOM (`ENCODING:UTF-8`, `CHARSET:65001`).
 - Amount formatting is invariant culture so OFX amounts consistently use `.`.
 
 

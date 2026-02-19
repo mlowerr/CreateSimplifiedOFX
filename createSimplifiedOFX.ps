@@ -1,4 +1,4 @@
-[CmdletBinding(SupportsShouldProcess = $true)]
+﻿[CmdletBinding(SupportsShouldProcess = $true)]
 param(
     [Parameter(Mandatory = $true)]
     [Alias('Entries')]
@@ -22,10 +22,10 @@ if (-not (Test-Path -LiteralPath $targetScript -PathType Leaf)) {
 $invokeParams = @{
     Entry      = $Entry
     OutputPath = $OutputPath
-    Force      = $Force
 }
 
-if ($PSBoundParameters.ContainsKey('WhatIf')) { $invokeParams['WhatIf'] = $WhatIfPreference }
-if ($PSBoundParameters.ContainsKey('Verbose')) { $invokeParams['Verbose'] = $VerbosePreference }
+if ($Force.IsPresent) { $invokeParams['Force'] = $true }
+if ($WhatIfPreference) { $invokeParams['WhatIf'] = $true }
+if ($VerbosePreference -ne 'SilentlyContinue') { $invokeParams['Verbose'] = $true }
 
 & $targetScript @invokeParams
