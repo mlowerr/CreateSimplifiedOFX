@@ -1,0 +1,215 @@
+<#
+.SYNOPSIS
+  Generates an OFX 1.02 (SGML) file containing yearly deposit transactions for Microsoft Money import.
+
+.REQUIREMENTS (per request)
+  1) Accept command-line inputs in SETS of 3 values:
+       - Date of first deposit: MM/DD/YY
+           * Always assume YY is prefixed by '20'
+           * Normalize single-digit MM/DD with leading zero (e.g., 2/1/30 -> 02/01/2030)
+       - Amount of deposit: decimal (e.g., 21.78)
+       - Number of times transaction will occur: number of years
+           * Inclusive rule: if start is 02/18/26 and years=10,
+             create entries for 02/18/2026 through 02/18/2036 (i.e., years + 1 transactions)
+
+  2) Support multiple sets of the above values in a single run.
+
+  3) Always set:
+       <BANKACCTFROM><ACCTID>0</ACCTID><ACCTTYPE>IMPORT</ACCTTYPE>
+
+  4) Output a valid OFX 1.02 (SGML) file with CREDIT transactions.
+
+.USAGE EXAMPLES
+  # One series:
+  .\New-AnnualDepositsOfx.ps1 -Entry "08/15/26,21.38,29" -OutputPath ".\deposits.ofx"
+
+  # Multiple series (each -Entry is one set: Date,Amount,Years):
+  .\New-AnnualDepositsOfx.ps1 `
+    -Entry "08/15/26,21.38,29" `
+    -Entry "02/15/27,21.38,29" `
+    -OutputPath ".\annual_deposits.ofx"
+
+.PARAMETER Entry
+  One or more strings, each in the format: "MM/DD/YY,Amount,Years"
+  Example: "2/1/30,21.78,10"
+
+.PARAMETER OutputPath
+  Path to write the OFX file. Default: ./import.ofx
+
+.NOTES
+  - Dates are generated yearly on the same month/day, inclusive for (Years + 1) occurrences.
+  - FITIDs are generated deterministically and uniquely per transaction within the file.
+#>
+
+[CmdletBinding()]
+param(
+  [Parameter(Mandatory = $true)]
+  [string[]]$Entry,
+
+  [Parameter(Mandatory = $false)]
+  [string]$OutputPath = (Join-Path -Path (Get-Location) -ChildPath "import.ofx")
+)
+
+Set-StrictMode -Version Latest
+$ErrorActionPreference = "Stop"
+
+function Convert-ToNormalizedDate {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$InputMmDdYy
+  )
+
+  $parts = $InputMmDdYy.Trim() -split "/"
+  if ($parts.Count -ne 3) {
+    throw "Invalid date '$InputMmDdYy'. Expected MM/DD/YY."
+  }
+
+  $mm = $parts[0].Trim().PadLeft(2, '0')
+  $dd = $parts[1].Trim().PadLeft(2, '0')
+  $yy = $parts[2].Trim().PadLeft(2, '0')
+
+  if ($mm -notmatch '^\d{2}$' -or $dd -notmatch '^\d{2}$' -or $yy -notmatch '^\d{2}$') {
+    throw "Invalid date '$InputMmDdYy'. Expected numeric MM/DD/YY."
+  }
+
+  $year = [int]("20$yy")
+  $month = [int]$mm
+  $day = [int]$dd
+
+  try {
+    return [datetime]::new($year, $month, $day, 0, 0, 0, [DateTimeKind]::Unspecified)
+  } catch {
+    throw "Invalid calendar date after normalization: $mm/$dd/$year"
+  }
+}
+
+function To-OfxDate {
+  param([datetime]$Dt)
+  return $Dt.ToString("yyyyMMdd")
+}
+
+# Collect transactions across all series
+$transactions = New-Object System.Collections.Generic.List[object]
+
+foreach ($e in $Entry) {
+  $parts = $e -split ","
+  if ($parts.Count -ne 3) {
+    throw "Invalid -Entry '$e'. Expected 'MM/DD/YY,Amount,Years'."
+  }
+
+  $startDate = Convert-ToNormalizedDate -InputMmDdYy $parts[0]
+  if (-not [decimal]::TryParse($parts[1].Trim(), [ref]([decimal]$null))) {
+    throw "Invalid amount '$($parts[1])' in -Entry '$e'. Expected a decimal number."
+  }
+  $amount = [decimal]$parts[1].Trim()
+
+  if (-not [int]::TryParse($parts[2].Trim(), [ref]([int]$null))) {
+    throw "Invalid years '$($parts[2])' in -Entry '$e'. Expected an integer."
+  }
+  $years = [int]$parts[2].Trim()
+  if ($years -lt 0) { throw "Years must be >= 0 in -Entry '$e'." }
+
+  # Inclusive: years + 1 occurrences
+  for ($i = 0; $i -le $years; $i++) {
+    $dt = $startDate.AddYears($i)
+    $transactions.Add([pscustomobject]@{
+      Date   = $dt
+      Amount = $amount
+      Name   = "Annual Deposit"
+      Memo   = ("Deposit ${0:N2} on {1}" -f $amount, $dt.ToString("MM/dd/yyyy"))
+    })
+  }
+}
+
+# Sort by date then amount for stable output
+$transactions = $transactions | Sort-Object -Property Date, Amount
+
+if ($transactions.Count -eq 0) {
+  throw "No transactions were generated. Check your inputs."
+}
+
+$dtStart = To-OfxDate $transactions[0].Date
+$dtEnd   = To-OfxDate $transactions[$transactions.Count - 1].Date
+$dtAsof  = $dtEnd
+
+# Build OFX 1.02 (SGML) content
+$lines = New-Object System.Collections.Generic.List[string]
+
+# Header
+$lines.Add("OFXHEADER:100")
+$lines.Add("DATA:OFXSGML")
+$lines.Add("VERSION:102")
+$lines.Add("SECURITY:NONE")
+$lines.Add("ENCODING:USASCII")
+$lines.Add("CHARSET:1252")
+$lines.Add("COMPRESSION:NONE")
+$lines.Add("OLDFILEUID:NONE")
+$lines.Add("NEWFILEUID:NONE")
+$lines.Add("")
+$lines.Add("<OFX>")
+$lines.Add("  <SIGNONMSGSRSV1>")
+$lines.Add("    <SONRS>")
+$lines.Add("      <STATUS>")
+$lines.Add("        <CODE>0")
+$lines.Add("        <SEVERITY>INFO")
+$lines.Add("      </STATUS>")
+$lines.Add("      <DTSERVER>$dtAsof")
+$lines.Add("      <LANGUAGE>ENG")
+$lines.Add("    </SONRS>")
+$lines.Add("  </SIGNONMSGSRSV1>")
+$lines.Add("  <BANKMSGSRSV1>")
+$lines.Add("    <STMTTRNRS>")
+$lines.Add("      <TRNUID>1")
+$lines.Add("      <STATUS>")
+$lines.Add("        <CODE>0")
+$lines.Add("        <SEVERITY>INFO")
+$lines.Add("      </STATUS>")
+$lines.Add("      <STMTRS>")
+$lines.Add("        <CURDEF>USD")
+$lines.Add("        <BANKACCTFROM>")
+$lines.Add("          <BANKID>000000000")
+$lines.Add("          <ACCTID>0")
+$lines.Add("          <ACCTTYPE>IMPORT")
+$lines.Add("        </BANKACCTFROM>")
+$lines.Add("        <BANKTRANLIST>")
+$lines.Add("          <DTSTART>$dtStart")
+$lines.Add("          <DTEND>$dtEnd")
+
+# Transactions
+$seq = 0
+foreach ($t in $transactions) {
+  $seq++
+  $posted = To-OfxDate $t.Date
+  # deterministic unique FITID within file
+  $fitid = ("IMP{0}{1:0000}" -f $posted, $seq)
+
+  $lines.Add("          <STMTTRN>")
+  $lines.Add("            <TRNTYPE>CREDIT")
+  $lines.Add("            <DTPOSTED>$posted")
+  $lines.Add(("            <TRNAMT>{0:F2}" -f $t.Amount))
+  $lines.Add("            <FITID>$fitid")
+  $lines.Add("            <NAME>$($t.Name)")
+  $lines.Add("            <MEMO>$($t.Memo)")
+  $lines.Add("          </STMTTRN>")
+}
+
+# Close
+$lines.Add("        </BANKTRANLIST>")
+$lines.Add("        <LEDGERBAL>")
+$lines.Add("          <BALAMT>0.00")
+$lines.Add("          <DTASOF>$dtAsof")
+$lines.Add("        </LEDGERBAL>")
+$lines.Add("      </STMTRS>")
+$lines.Add("    </STMTTRNRS>")
+$lines.Add("  </BANKMSGSRSV1>")
+$lines.Add("</OFX>")
+
+$ofxText = ($lines -join "`n") + "`n"
+
+# Write using Windows-1252 encoding to match CHARSET:1252
+$enc = [System.Text.Encoding]::GetEncoding(1252)
+[System.IO.File]::WriteAllText($OutputPath, $ofxText, $enc)
+
+Write-Host "Wrote OFX file: $OutputPath"
+Write-Host ("Transactions: {0}" -f $transactions.Count)
+Write-Host ("Date range:   {0} -> {1}" -f $transactions[0].Date.ToString("MM/dd/yyyy"), $transactions[$transactions.Count - 1].Date.ToString("MM/dd/yyyy"))
