@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  Generates an OFX 1.02 (SGML) file containing yearly deposit transactions for Microsoft Money import.
+  Generates an OFX 1.02 (SGML) file containing annual CREDIT transactions for import workflows.
 
 .REQUIREMENTS (per request)
   1) Accept command-line inputs in SETS of 3 values:
@@ -21,10 +21,10 @@
 
 .USAGE EXAMPLES
   # One series:
-  .\New-AnnualDepositsOfx.ps1 -Entry "08/15/26,21.38,29" -OutputPath ".\deposits.ofx"
+  .\createSimplifiedOFX.ps -Entry "08/15/26,21.38,29" -OutputPath ".\deposits.ofx"
 
   # Multiple series (each -Entry is one set: Date,Amount,Years):
-  .\New-AnnualDepositsOfx.ps1 `
+  .\createSimplifiedOFX.ps `
     -Entry "08/15/26,21.38,29" `
     -Entry "02/15/27,21.38,29" `
     -OutputPath ".\annual_deposits.ofx"
@@ -38,6 +38,7 @@
 
 .NOTES
   - Dates are generated yearly on the same month/day, inclusive for (Years + 1) occurrences.
+  - Amount parsing/formatting uses invariant culture to produce consistent OFX output.
   - FITIDs are generated deterministically and uniquely per transaction within the file.
 #>
 
@@ -52,6 +53,8 @@ param(
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+
+$invariantCulture = [System.Globalization.CultureInfo]::InvariantCulture
 
 function Convert-ToNormalizedDate {
   param(
@@ -83,6 +86,41 @@ function Convert-ToNormalizedDate {
   }
 }
 
+function Convert-ToEntry {
+  param(
+    [Parameter(Mandatory = $true)]
+    [string]$Value
+  )
+
+  $parts = $Value -split ","
+  if ($parts.Count -ne 3) {
+    throw "Invalid -Entry '$Value'. Expected 'MM/DD/YY,Amount,Years'."
+  }
+
+  $startDate = Convert-ToNormalizedDate -InputMmDdYy $parts[0]
+
+  $amountText = $parts[1].Trim()
+  $amount = 0m
+  if (-not [decimal]::TryParse($amountText, [System.Globalization.NumberStyles]::Number, $invariantCulture, [ref]$amount)) {
+    throw "Invalid amount '$amountText' in -Entry '$Value'. Expected a decimal number using '.' as separator (example: 21.78)."
+  }
+
+  $yearsText = $parts[2].Trim()
+  $years = 0
+  if (-not [int]::TryParse($yearsText, [ref]$years)) {
+    throw "Invalid years '$yearsText' in -Entry '$Value'. Expected an integer."
+  }
+  if ($years -lt 0) {
+    throw "Years must be >= 0 in -Entry '$Value'."
+  }
+
+  return [pscustomobject]@{
+    StartDate = $startDate
+    Amount    = $amount
+    Years     = $years
+  }
+}
+
 function To-OfxDate {
   param([datetime]$Dt)
   return $Dt.ToString("yyyyMMdd")
@@ -92,31 +130,16 @@ function To-OfxDate {
 $transactions = New-Object System.Collections.Generic.List[object]
 
 foreach ($e in $Entry) {
-  $parts = $e -split ","
-  if ($parts.Count -ne 3) {
-    throw "Invalid -Entry '$e'. Expected 'MM/DD/YY,Amount,Years'."
-  }
-
-  $startDate = Convert-ToNormalizedDate -InputMmDdYy $parts[0]
-  if (-not [decimal]::TryParse($parts[1].Trim(), [ref]([decimal]$null))) {
-    throw "Invalid amount '$($parts[1])' in -Entry '$e'. Expected a decimal number."
-  }
-  $amount = [decimal]$parts[1].Trim()
-
-  if (-not [int]::TryParse($parts[2].Trim(), [ref]([int]$null))) {
-    throw "Invalid years '$($parts[2])' in -Entry '$e'. Expected an integer."
-  }
-  $years = [int]$parts[2].Trim()
-  if ($years -lt 0) { throw "Years must be >= 0 in -Entry '$e'." }
+  $entryValue = Convert-ToEntry -Value $e
 
   # Inclusive: years + 1 occurrences
-  for ($i = 0; $i -le $years; $i++) {
-    $dt = $startDate.AddYears($i)
+  for ($i = 0; $i -le $entryValue.Years; $i++) {
+    $dt = $entryValue.StartDate.AddYears($i)
     $transactions.Add([pscustomobject]@{
       Date   = $dt
-      Amount = $amount
+      Amount = $entryValue.Amount
       Name   = "Annual Deposit"
-      Memo   = ("Deposit ${0:N2} on {1}" -f $amount, $dt.ToString("MM/dd/yyyy"))
+      Memo   = ("Deposit ${0} on {1}" -f $entryValue.Amount.ToString("N2", $invariantCulture), $dt.ToString("MM/dd/yyyy"))
     })
   }
 }
@@ -133,47 +156,52 @@ $dtEnd   = To-OfxDate $transactions[$transactions.Count - 1].Date
 $dtAsof  = $dtEnd
 
 # Build OFX 1.02 (SGML) content
-$lines = New-Object System.Collections.Generic.List[string]
+$builder = New-Object System.Text.StringBuilder
+
+function Add-Line {
+  param([string]$Value)
+  [void]$builder.AppendLine($Value)
+}
 
 # Header
-$lines.Add("OFXHEADER:100")
-$lines.Add("DATA:OFXSGML")
-$lines.Add("VERSION:102")
-$lines.Add("SECURITY:NONE")
-$lines.Add("ENCODING:USASCII")
-$lines.Add("CHARSET:1252")
-$lines.Add("COMPRESSION:NONE")
-$lines.Add("OLDFILEUID:NONE")
-$lines.Add("NEWFILEUID:NONE")
-$lines.Add("")
-$lines.Add("<OFX>")
-$lines.Add("  <SIGNONMSGSRSV1>")
-$lines.Add("    <SONRS>")
-$lines.Add("      <STATUS>")
-$lines.Add("        <CODE>0")
-$lines.Add("        <SEVERITY>INFO")
-$lines.Add("      </STATUS>")
-$lines.Add("      <DTSERVER>$dtAsof")
-$lines.Add("      <LANGUAGE>ENG")
-$lines.Add("    </SONRS>")
-$lines.Add("  </SIGNONMSGSRSV1>")
-$lines.Add("  <BANKMSGSRSV1>")
-$lines.Add("    <STMTTRNRS>")
-$lines.Add("      <TRNUID>1")
-$lines.Add("      <STATUS>")
-$lines.Add("        <CODE>0")
-$lines.Add("        <SEVERITY>INFO")
-$lines.Add("      </STATUS>")
-$lines.Add("      <STMTRS>")
-$lines.Add("        <CURDEF>USD")
-$lines.Add("        <BANKACCTFROM>")
-$lines.Add("          <BANKID>000000000")
-$lines.Add("          <ACCTID>0")
-$lines.Add("          <ACCTTYPE>IMPORT")
-$lines.Add("        </BANKACCTFROM>")
-$lines.Add("        <BANKTRANLIST>")
-$lines.Add("          <DTSTART>$dtStart")
-$lines.Add("          <DTEND>$dtEnd")
+Add-Line "OFXHEADER:100"
+Add-Line "DATA:OFXSGML"
+Add-Line "VERSION:102"
+Add-Line "SECURITY:NONE"
+Add-Line "ENCODING:USASCII"
+Add-Line "CHARSET:1252"
+Add-Line "COMPRESSION:NONE"
+Add-Line "OLDFILEUID:NONE"
+Add-Line "NEWFILEUID:NONE"
+Add-Line ""
+Add-Line "<OFX>"
+Add-Line "  <SIGNONMSGSRSV1>"
+Add-Line "    <SONRS>"
+Add-Line "      <STATUS>"
+Add-Line "        <CODE>0"
+Add-Line "        <SEVERITY>INFO"
+Add-Line "      </STATUS>"
+Add-Line "      <DTSERVER>$dtAsof"
+Add-Line "      <LANGUAGE>ENG"
+Add-Line "    </SONRS>"
+Add-Line "  </SIGNONMSGSRSV1>"
+Add-Line "  <BANKMSGSRSV1>"
+Add-Line "    <STMTTRNRS>"
+Add-Line "      <TRNUID>1"
+Add-Line "      <STATUS>"
+Add-Line "        <CODE>0"
+Add-Line "        <SEVERITY>INFO"
+Add-Line "      </STATUS>"
+Add-Line "      <STMTRS>"
+Add-Line "        <CURDEF>USD"
+Add-Line "        <BANKACCTFROM>"
+Add-Line "          <BANKID>000000000"
+Add-Line "          <ACCTID>0"
+Add-Line "          <ACCTTYPE>IMPORT"
+Add-Line "        </BANKACCTFROM>"
+Add-Line "        <BANKTRANLIST>"
+Add-Line "          <DTSTART>$dtStart"
+Add-Line "          <DTEND>$dtEnd"
 
 # Transactions
 $seq = 0
@@ -183,28 +211,28 @@ foreach ($t in $transactions) {
   # deterministic unique FITID within file
   $fitid = ("IMP{0}{1:0000}" -f $posted, $seq)
 
-  $lines.Add("          <STMTTRN>")
-  $lines.Add("            <TRNTYPE>CREDIT")
-  $lines.Add("            <DTPOSTED>$posted")
-  $lines.Add(("            <TRNAMT>{0:F2}" -f $t.Amount))
-  $lines.Add("            <FITID>$fitid")
-  $lines.Add("            <NAME>$($t.Name)")
-  $lines.Add("            <MEMO>$($t.Memo)")
-  $lines.Add("          </STMTTRN>")
+  Add-Line "          <STMTTRN>"
+  Add-Line "            <TRNTYPE>CREDIT"
+  Add-Line "            <DTPOSTED>$posted"
+  Add-Line ("            <TRNAMT>{0}" -f $t.Amount.ToString("F2", $invariantCulture))
+  Add-Line "            <FITID>$fitid"
+  Add-Line "            <NAME>$($t.Name)"
+  Add-Line "            <MEMO>$($t.Memo)"
+  Add-Line "          </STMTTRN>"
 }
 
 # Close
-$lines.Add("        </BANKTRANLIST>")
-$lines.Add("        <LEDGERBAL>")
-$lines.Add("          <BALAMT>0.00")
-$lines.Add("          <DTASOF>$dtAsof")
-$lines.Add("        </LEDGERBAL>")
-$lines.Add("      </STMTRS>")
-$lines.Add("    </STMTTRNRS>")
-$lines.Add("  </BANKMSGSRSV1>")
-$lines.Add("</OFX>")
+Add-Line "        </BANKTRANLIST>"
+Add-Line "        <LEDGERBAL>"
+Add-Line "          <BALAMT>0.00"
+Add-Line "          <DTASOF>$dtAsof"
+Add-Line "        </LEDGERBAL>"
+Add-Line "      </STMTRS>"
+Add-Line "    </STMTTRNRS>"
+Add-Line "  </BANKMSGSRSV1>"
+Add-Line "</OFX>"
 
-$ofxText = ($lines -join "`n") + "`n"
+$ofxText = $builder.ToString()
 
 # Write using Windows-1252 encoding to match CHARSET:1252
 $enc = [System.Text.Encoding]::GetEncoding(1252)
