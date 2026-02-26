@@ -6,7 +6,7 @@ param(
 
     [Parameter()]
     [Alias('OutFile')]
-    [string]$OutputPath = (Join-Path -Path (Get-Location) -ChildPath 'import.ofx'),
+    [string]$OutputPath = 'C:\output\import.ofx',
 
     [switch]$Force
 )
@@ -122,8 +122,22 @@ try {
 
     $fullOutputPath = [System.IO.Path]::GetFullPath($OutputPath)
     $outputDirectory = [System.IO.Path]::GetDirectoryName($fullOutputPath)
-    if ([string]::IsNullOrWhiteSpace($outputDirectory) -or -not (Test-Path -LiteralPath $outputDirectory -PathType Container)) {
-        throw "Output directory does not exist: $outputDirectory"
+    if ([string]::IsNullOrWhiteSpace($outputDirectory)) {
+        throw 'Output directory was not resolved from -OutputPath.'
+    }
+
+    $windowsDirectory = $null
+    if (-not [string]::IsNullOrWhiteSpace($env:WINDIR)) {
+        $windowsDirectory = [System.IO.Path]::GetFullPath($env:WINDIR)
+    }
+
+    if (-not [string]::IsNullOrWhiteSpace($windowsDirectory) -and $fullOutputPath.StartsWith($windowsDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+        throw "Writing to the Windows directory is not allowed. Choose an output path outside: $windowsDirectory"
+    }
+
+    if (-not (Test-Path -LiteralPath $outputDirectory -PathType Container)) {
+        New-Item -Path $outputDirectory -ItemType Directory -Force | Out-Null
+        Write-Status -Prefix 'WARNING' -Message "Created output directory: $outputDirectory"
     }
 
     if ((Test-Path -LiteralPath $fullOutputPath -PathType Leaf) -and -not $Force.IsPresent) {

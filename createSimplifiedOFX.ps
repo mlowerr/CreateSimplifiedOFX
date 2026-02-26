@@ -1,243 +1,31 @@
-<#
-.SYNOPSIS
-  Generates an OFX 1.02 (SGML) file containing annual CREDIT transactions for import workflows.
-
-.REQUIREMENTS (per request)
-  1) Accept command-line inputs in SETS of 3 values:
-       - Date of first deposit: MM/DD/YY
-           * Always assume YY is prefixed by '20'
-           * Normalize single-digit MM/DD with leading zero (e.g., 2/1/30 -> 02/01/2030)
-       - Amount of deposit: decimal (e.g., 21.78)
-       - Number of times transaction will occur: number of years
-           * Inclusive rule: if start is 02/18/26 and years=10,
-             create entries for 02/18/2026 through 02/18/2036 (i.e., years + 1 transactions)
-
-  2) Support multiple sets of the above values in a single run.
-
-  3) Always set:
-       <BANKACCTFROM><ACCTID>0</ACCTID><ACCTTYPE>IMPORT</ACCTTYPE>
-
-  4) Output a valid OFX 1.02 (SGML) file with CREDIT transactions.
-
-.USAGE EXAMPLES
-  # One series:
-  .\createSimplifiedOFX.ps -Entry "08/15/26,21.38,29" -OutputPath ".\deposits.ofx"
-
-  # Multiple series (each -Entry is one set: Date,Amount,Years):
-  .\createSimplifiedOFX.ps `
-    -Entry "08/15/26,21.38,29" `
-    -Entry "02/15/27,21.38,29" `
-    -OutputPath ".\annual_deposits.ofx"
-
-.PARAMETER Entry
-  One or more strings, each in the format: "MM/DD/YY,Amount,Years"
-  Example: "2/1/30,21.78,10"
-
-.PARAMETER OutputPath
-  Path to write the OFX file. Default: ./import.ofx
-
-.NOTES
-  - Dates are generated yearly on the same month/day, inclusive for (Years + 1) occurrences.
-  - Amount parsing/formatting uses invariant culture to produce consistent OFX output.
-  - FITIDs are generated deterministically and uniquely per transaction within the file.
-#>
-
-[CmdletBinding()]
+﻿[CmdletBinding(SupportsShouldProcess = $true)]
 param(
-  [Parameter(Mandatory = $true)]
-  [string[]]$Entry,
+    [Parameter(Mandatory = $true)]
+    [Alias('Entries')]
+    [string[]]$Entry,
 
-  [Parameter(Mandatory = $false)]
-  [string]$OutputPath = (Join-Path -Path (Get-Location) -ChildPath "import.ofx")
+    [Parameter()]
+    [Alias('OutFile')]
+    [string]$OutputPath = 'C:\output\import.ofx',
+
+    [switch]$Force
 )
 
 Set-StrictMode -Version Latest
-$ErrorActionPreference = "Stop"
+$ErrorActionPreference = 'Stop'
 
-$invariantCulture = [System.Globalization.CultureInfo]::InvariantCulture
-
-function Convert-ToNormalizedDate {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$InputMmDdYy
-  )
-
-  $parts = $InputMmDdYy.Trim() -split "/"
-  if ($parts.Count -ne 3) {
-    throw "Invalid date '$InputMmDdYy'. Expected MM/DD/YY."
-  }
-
-  $mm = $parts[0].Trim().PadLeft(2, '0')
-  $dd = $parts[1].Trim().PadLeft(2, '0')
-  $yy = $parts[2].Trim().PadLeft(2, '0')
-
-  if ($mm -notmatch '^\d{2}$' -or $dd -notmatch '^\d{2}$' -or $yy -notmatch '^\d{2}$') {
-    throw "Invalid date '$InputMmDdYy'. Expected numeric MM/DD/YY."
-  }
-
-  $year = [int]("20$yy")
-  $month = [int]$mm
-  $day = [int]$dd
-
-  try {
-    return [datetime]::new($year, $month, $day, 0, 0, 0, [DateTimeKind]::Unspecified)
-  } catch {
-    throw "Invalid calendar date after normalization: $mm/$dd/$year"
-  }
+$targetScript = Join-Path -Path $PSScriptRoot -ChildPath 'CreateSimplifiedOFX.ps1'
+if (-not (Test-Path -LiteralPath $targetScript -PathType Leaf)) {
+    throw "Script not found: $targetScript"
 }
 
-function Convert-ToEntry {
-  param(
-    [Parameter(Mandatory = $true)]
-    [string]$Value
-  )
-
-  $parts = $Value -split ","
-  if ($parts.Count -ne 3) {
-    throw "Invalid -Entry '$Value'. Expected 'MM/DD/YY,Amount,Years'."
-  }
-
-  $startDate = Convert-ToNormalizedDate -InputMmDdYy $parts[0]
-
-  $amountText = $parts[1].Trim()
-  $amount = 0m
-  if (-not [decimal]::TryParse($amountText, [System.Globalization.NumberStyles]::Number, $invariantCulture, [ref]$amount)) {
-    throw "Invalid amount '$amountText' in -Entry '$Value'. Expected a decimal number using '.' as separator (example: 21.78)."
-  }
-
-  $yearsText = $parts[2].Trim()
-  $years = 0
-  if (-not [int]::TryParse($yearsText, [ref]$years)) {
-    throw "Invalid years '$yearsText' in -Entry '$Value'. Expected an integer."
-  }
-  if ($years -lt 0) {
-    throw "Years must be >= 0 in -Entry '$Value'."
-  }
-
-  return [pscustomobject]@{
-    StartDate = $startDate
-    Amount    = $amount
-    Years     = $years
-  }
+$invokeParams = @{
+    Entry      = $Entry
+    OutputPath = $OutputPath
 }
 
-function To-OfxDate {
-  param([datetime]$Dt)
-  return $Dt.ToString("yyyyMMdd")
-}
+if ($Force.IsPresent) { $invokeParams['Force'] = $true }
+if ($WhatIfPreference) { $invokeParams['WhatIf'] = $true }
+if ($VerbosePreference -ne 'SilentlyContinue') { $invokeParams['Verbose'] = $true }
 
-# Collect transactions across all series
-$transactions = New-Object System.Collections.Generic.List[object]
-
-foreach ($e in $Entry) {
-  $entryValue = Convert-ToEntry -Value $e
-
-  # Inclusive: years + 1 occurrences
-  for ($i = 0; $i -le $entryValue.Years; $i++) {
-    $dt = $entryValue.StartDate.AddYears($i)
-    $transactions.Add([pscustomobject]@{
-      Date   = $dt
-      Amount = $entryValue.Amount
-      Name   = "Annual Deposit"
-      Memo   = ("Deposit ${0} on {1}" -f $entryValue.Amount.ToString("N2", $invariantCulture), $dt.ToString("MM/dd/yyyy"))
-    })
-  }
-}
-
-# Sort by date then amount for stable output
-$transactions = $transactions | Sort-Object -Property Date, Amount
-
-if ($transactions.Count -eq 0) {
-  throw "No transactions were generated. Check your inputs."
-}
-
-$dtStart = To-OfxDate $transactions[0].Date
-$dtEnd   = To-OfxDate $transactions[$transactions.Count - 1].Date
-$dtAsof  = $dtEnd
-
-# Build OFX 1.02 (SGML) content
-$builder = New-Object System.Text.StringBuilder
-
-function Add-Line {
-  param([string]$Value)
-  [void]$builder.AppendLine($Value)
-}
-
-# Header
-Add-Line "OFXHEADER:100"
-Add-Line "DATA:OFXSGML"
-Add-Line "VERSION:102"
-Add-Line "SECURITY:NONE"
-Add-Line "ENCODING:USASCII"
-Add-Line "CHARSET:1252"
-Add-Line "COMPRESSION:NONE"
-Add-Line "OLDFILEUID:NONE"
-Add-Line "NEWFILEUID:NONE"
-Add-Line ""
-Add-Line "<OFX>"
-Add-Line "  <SIGNONMSGSRSV1>"
-Add-Line "    <SONRS>"
-Add-Line "      <STATUS>"
-Add-Line "        <CODE>0"
-Add-Line "        <SEVERITY>INFO"
-Add-Line "      </STATUS>"
-Add-Line "      <DTSERVER>$dtAsof"
-Add-Line "      <LANGUAGE>ENG"
-Add-Line "    </SONRS>"
-Add-Line "  </SIGNONMSGSRSV1>"
-Add-Line "  <BANKMSGSRSV1>"
-Add-Line "    <STMTTRNRS>"
-Add-Line "      <TRNUID>1"
-Add-Line "      <STATUS>"
-Add-Line "        <CODE>0"
-Add-Line "        <SEVERITY>INFO"
-Add-Line "      </STATUS>"
-Add-Line "      <STMTRS>"
-Add-Line "        <CURDEF>USD"
-Add-Line "        <BANKACCTFROM>"
-Add-Line "          <BANKID>000000000"
-Add-Line "          <ACCTID>0"
-Add-Line "          <ACCTTYPE>IMPORT"
-Add-Line "        </BANKACCTFROM>"
-Add-Line "        <BANKTRANLIST>"
-Add-Line "          <DTSTART>$dtStart"
-Add-Line "          <DTEND>$dtEnd"
-
-# Transactions
-$seq = 0
-foreach ($t in $transactions) {
-  $seq++
-  $posted = To-OfxDate $t.Date
-  # deterministic unique FITID within file
-  $fitid = ("IMP{0}{1:0000}" -f $posted, $seq)
-
-  Add-Line "          <STMTTRN>"
-  Add-Line "            <TRNTYPE>CREDIT"
-  Add-Line "            <DTPOSTED>$posted"
-  Add-Line ("            <TRNAMT>{0}" -f $t.Amount.ToString("F2", $invariantCulture))
-  Add-Line "            <FITID>$fitid"
-  Add-Line "            <NAME>$($t.Name)"
-  Add-Line "            <MEMO>$($t.Memo)"
-  Add-Line "          </STMTTRN>"
-}
-
-# Close
-Add-Line "        </BANKTRANLIST>"
-Add-Line "        <LEDGERBAL>"
-Add-Line "          <BALAMT>0.00"
-Add-Line "          <DTASOF>$dtAsof"
-Add-Line "        </LEDGERBAL>"
-Add-Line "      </STMTRS>"
-Add-Line "    </STMTTRNRS>"
-Add-Line "  </BANKMSGSRSV1>"
-Add-Line "</OFX>"
-
-$ofxText = $builder.ToString()
-
-# Write using Windows-1252 encoding to match CHARSET:1252
-$enc = [System.Text.Encoding]::GetEncoding(1252)
-[System.IO.File]::WriteAllText($OutputPath, $ofxText, $enc)
-
-Write-Host "Wrote OFX file: $OutputPath"
-Write-Host ("Transactions: {0}" -f $transactions.Count)
-Write-Host ("Date range:   {0} -> {1}" -f $transactions[0].Date.ToString("MM/dd/yyyy"), $transactions[$transactions.Count - 1].Date.ToString("MM/dd/yyyy"))
+& $targetScript @invokeParams

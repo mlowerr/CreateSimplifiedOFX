@@ -37,7 +37,7 @@ $form.Controls.Add($labelOutput)
 $textOutput = New-Object System.Windows.Forms.TextBox
 $textOutput.Location = New-Object System.Drawing.Point(15, 230)
 $textOutput.Size = New-Object System.Drawing.Size(820, 22)
-$textOutput.Text = Join-Path -Path (Get-Location) -ChildPath 'import.ofx'
+$textOutput.Text = 'C:\\output\\import.ofx'
 $form.Controls.Add($textOutput)
 
 $buttonBrowse = New-Object System.Windows.Forms.Button
@@ -112,6 +112,8 @@ $form.Controls.Add($generatedPanel)
 $openDialog = New-Object System.Windows.Forms.SaveFileDialog
 $openDialog.Filter = 'OFX files (*.ofx)|*.ofx|All files (*.*)|*.*'
 $openDialog.DefaultExt = 'ofx'
+$openDialog.InitialDirectory = 'C:\\output'
+$openDialog.OverwritePrompt = $true
 
 $scriptPath = Join-Path -Path $PSScriptRoot -ChildPath 'CreateSimplifiedOFX.ps1'
 
@@ -174,6 +176,26 @@ $runButton.Add_Click({
 
     if ([string]::IsNullOrWhiteSpace($textOutput.Text)) {
         [System.Windows.Forms.MessageBox]::Show('Output path is required.', 'Validation', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+        return
+    }
+
+    try {
+        $fullOutputPath = [System.IO.Path]::GetFullPath($textOutput.Text)
+
+        $windowsDirectory = $null
+        if (-not [string]::IsNullOrWhiteSpace($env:WINDIR)) {
+            $windowsDirectory = [System.IO.Path]::GetFullPath($env:WINDIR)
+        }
+
+        if (-not [string]::IsNullOrWhiteSpace($windowsDirectory) -and $fullOutputPath.StartsWith($windowsDirectory, [System.StringComparison]::OrdinalIgnoreCase)) {
+            [System.Windows.Forms.MessageBox]::Show("Output cannot be inside the Windows directory: $windowsDirectory", 'Validation', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
+            return
+        }
+
+        $textOutput.Text = $fullOutputPath
+    }
+    catch {
+        [System.Windows.Forms.MessageBox]::Show($_.Exception.Message, 'Validation', [System.Windows.Forms.MessageBoxButtons]::OK, [System.Windows.Forms.MessageBoxIcon]::Warning) | Out-Null
         return
     }
 
