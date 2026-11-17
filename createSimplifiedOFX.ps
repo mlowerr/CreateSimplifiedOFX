@@ -15,19 +15,18 @@
   2) Support multiple sets of the above values in a single run.
 
   3) Always set:
-       <BANKACCTFROM><ACCTID>0</ACCTID><ACCTTYPE>IMPORT</ACCTTYPE>
+       <BANKACCTFROM><ACCTID>0</ACCTID><ACCTTYPE>CHECKING</ACCTTYPE> (default)
 
   4) Output a valid OFX 1.02 (SGML) file with CREDIT transactions.
 
 .USAGE EXAMPLES
   # One series:
-  .\New-AnnualDepositsOfx.ps1 -Entry "08/15/26,21.38,29" -OutputPath ".\deposits.ofx"
+  pwsh -File ./createSimplifiedOFX.ps -Entry "08/15/26,21.38,29" -OutputPath ".\deposits.ofx"
 
-  # Multiple series (each -Entry is one set: Date,Amount,Years):
-  .\New-AnnualDepositsOfx.ps1 `
-    -Entry "08/15/26,21.38,29" `
-    -Entry "02/15/27,21.38,29" `
-    -OutputPath ".\annual_deposits.ofx"
+  # Multiple series (PowerShell array passed to the script block):
+  & ([scriptblock]::Create((Get-Content -Raw ./createSimplifiedOFX.ps))) `
+    -Entry @("08/15/26,21.38,29", "02/15/27,21.38,29") `
+    -OutputPath "./annual_deposits.ofx"
 
 .PARAMETER Entry
   One or more strings, each in the format: "MM/DD/YY,Amount,Years"
@@ -35,6 +34,9 @@
 
 .PARAMETER OutputPath
   Path to write the OFX file. Default: ./import.ofx
+
+.PARAMETER AccountType
+  OFX 1.02 bank account type. Defaults to CHECKING; use the type of the destination account.
 
 .NOTES
   - Dates are generated yearly on the same month/day, inclusive for (Years + 1) occurrences.
@@ -47,11 +49,15 @@ param(
   [string[]]$Entry,
 
   [Parameter(Mandatory = $false)]
-  [string]$OutputPath = (Join-Path -Path (Get-Location) -ChildPath "import.ofx")
+  [string]$OutputPath = (Join-Path -Path (Get-Location) -ChildPath "import.ofx"),
+
+  [ValidateSet("CHECKING", "SAVINGS", "MONEYMRKT", "CREDITLINE")]
+  [string]$AccountType = "CHECKING"
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
+$invariant = [System.Globalization.CultureInfo]::InvariantCulture
 
 function Convert-ToNormalizedDate {
   param(
@@ -85,7 +91,7 @@ function Convert-ToNormalizedDate {
 
 function To-OfxDate {
   param([datetime]$Dt)
-  return $Dt.ToString("yyyyMMdd")
+  return $Dt.ToString("yyyyMMdd", $invariant)
 }
 
 # Collect transactions across all series
@@ -98,10 +104,12 @@ foreach ($e in $Entry) {
   }
 
   $startDate = Convert-ToNormalizedDate -InputMmDdYy $parts[0]
-  if (-not [decimal]::TryParse($parts[1].Trim(), [ref]([decimal]$null))) {
+  $amount = [decimal]0
+  $amountStyle = [System.Globalization.NumberStyles]::AllowLeadingSign -bor
+                 [System.Globalization.NumberStyles]::AllowDecimalPoint
+  if (-not [decimal]::TryParse($parts[1].Trim(), $amountStyle, $invariant, [ref]$amount)) {
     throw "Invalid amount '$($parts[1])' in -Entry '$e'. Expected a decimal number."
   }
-  $amount = [decimal]$parts[1].Trim()
 
   if (-not [int]::TryParse($parts[2].Trim(), [ref]([int]$null))) {
     throw "Invalid years '$($parts[2])' in -Entry '$e'. Expected an integer."
@@ -116,13 +124,13 @@ foreach ($e in $Entry) {
       Date   = $dt
       Amount = $amount
       Name   = "Annual Deposit"
-      Memo   = ("Deposit ${0:N2} on {1}" -f $amount, $dt.ToString("MM/dd/yyyy"))
+      Memo   = [string]::Format($invariant, 'Deposit ${0:F2} on {1}', $amount, $dt.ToString("MM/dd/yyyy", $invariant))
     })
   }
 }
 
 # Sort by date then amount for stable output
-$transactions = $transactions | Sort-Object -Property Date, Amount
+$transactions = @($transactions | Sort-Object -Property Date, Amount)
 
 if ($transactions.Count -eq 0) {
   throw "No transactions were generated. Check your inputs."
@@ -131,6 +139,7 @@ if ($transactions.Count -eq 0) {
 $dtStart = To-OfxDate $transactions[0].Date
 $dtEnd   = To-OfxDate $transactions[$transactions.Count - 1].Date
 $dtAsof  = $dtEnd
+$dtServer = [datetime]::UtcNow.ToString("yyyyMMddHHmmss", $invariant) + "[0:GMT]"
 
 # Build OFX 1.02 (SGML) content
 $lines = New-Object System.Collections.Generic.List[string]
@@ -153,7 +162,7 @@ $lines.Add("      <STATUS>")
 $lines.Add("        <CODE>0")
 $lines.Add("        <SEVERITY>INFO")
 $lines.Add("      </STATUS>")
-$lines.Add("      <DTSERVER>$dtAsof")
+$lines.Add("      <DTSERVER>$dtServer")
 $lines.Add("      <LANGUAGE>ENG")
 $lines.Add("    </SONRS>")
 $lines.Add("  </SIGNONMSGSRSV1>")
@@ -169,7 +178,7 @@ $lines.Add("        <CURDEF>USD")
 $lines.Add("        <BANKACCTFROM>")
 $lines.Add("          <BANKID>000000000")
 $lines.Add("          <ACCTID>0")
-$lines.Add("          <ACCTTYPE>IMPORT")
+$lines.Add("          <ACCTTYPE>$($AccountType.ToUpperInvariant())")
 $lines.Add("        </BANKACCTFROM>")
 $lines.Add("        <BANKTRANLIST>")
 $lines.Add("          <DTSTART>$dtStart")
@@ -186,7 +195,7 @@ foreach ($t in $transactions) {
   $lines.Add("          <STMTTRN>")
   $lines.Add("            <TRNTYPE>CREDIT")
   $lines.Add("            <DTPOSTED>$posted")
-  $lines.Add(("            <TRNAMT>{0:F2}" -f $t.Amount))
+  $lines.Add("            <TRNAMT>$($t.Amount.ToString('F2', $invariant))")
   $lines.Add("            <FITID>$fitid")
   $lines.Add("            <NAME>$($t.Name)")
   $lines.Add("            <MEMO>$($t.Memo)")
@@ -204,7 +213,7 @@ $lines.Add("    </STMTTRNRS>")
 $lines.Add("  </BANKMSGSRSV1>")
 $lines.Add("</OFX>")
 
-$ofxText = ($lines -join "`n") + "`n"
+$ofxText = ($lines -join "`r`n") + "`r`n"
 
 # Write using Windows-1252 encoding to match CHARSET:1252
 $enc = [System.Text.Encoding]::GetEncoding(1252)
